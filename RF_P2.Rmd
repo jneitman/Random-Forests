@@ -1,0 +1,172 @@
+---
+title: "Random Forests: Part 2"
+author: "Joel Neitman"
+date: "February 18, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Breast Cancer: Malignant or Benign
+
+```{r echo=FALSE, out.width="100%"}
+knitr::include_graphics("./Forests.jpg")
+```
+
+
+
+Random forests are capable of handling many features of a data set and potentially help select key features to be included in a final model (feature selection).  Here we'll develop models on a more complex data set and implement a few instances of cross validation for tuning hyperparameters.
+
+Models will be fit to breast cancer data found at https://www.kaggle.com/uciml/breast-cancer-wisconsin-data, which is also included in this repository.  The goal of the models will be to classify the diagnosis of an observation based off the other features.
+
+### Load and view data
+
+Once the data is loaded, we can observe simple descriptive statistics and visualize how features relate to one another.
+```{r}
+BC_data = read.csv("./data.csv")
+str(BC_data)
+summary(BC_data)
+BC_data = BC_data[,-c(1, 33)]
+```
+
+The data has 569 observations and 33 features (variables).  Of the variables, the analysis will not need the "id" or "mode:logical" features since id is most likely an index of sorts and Mode:logical is nothing but NA's.  The remaining features are all numerical observations with diagnosis being a factor of "M" or "B" (malignant or benign).
+
+### Plots: Boxplots
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+library(reshape2)
+library(ggplot2)
+meltdata = melt(BC_data, id.vars = "diagnosis")
+myTheme = theme(
+  panel.background = element_blank(),
+  panel.grid = element_blank(),
+  axis.text.x = element_blank(),
+  axis.ticks.x = element_blank(),
+  axis.title.x = element_blank()
+) 
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[2:6]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon")) 
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[7:11]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[12:16]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[17:21]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[22:26]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon")) 
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[27:31]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_boxplot() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+```
+
+
+Viewing the boxplots, we see M an B tumors share strong to subtle differences among the features.  There's also a notable amount of outliers for the majority of features, but since outliers compose a large amount of data for several features, they'll remain within the data set.
+
+### Plots: Malignant vs Benign Counts
+```{r, echo=FALSE}
+barplot(table(BC_data$diagnosis), col = c("lightblue", "salmon"), main = "Counts of Breast Cancer Diagnosis", xlab = "Diagnosis", xaxt = "n", ylab = "Count", width = .8, xlim = c(0,2.5), border = F)
+axis(2, col = "white", tck = .05)
+legend("topright", c("Benign", "Malignant"), fill = c("lightblue", "salmon"), bty = "n")
+```
+
+There's a slight imbalance between the number of observations with a malignant tumor and the number with a benign tumor, which may add more difficultly to classifying the diagnosis.
+
+### Plots: Violin  
+```{r, echo=FALSE}
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[2:6]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon")) 
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[7:11]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[12:16]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[17:21]),], aes(factor(diagnosis), value, fill = diagnosis)) + geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[22:26]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon")) 
+ggplot(meltdata[which(meltdata$variable %in% names(BC_data)[27:31]),], aes(factor(diagnosis), value, fill = diagnosis)) +geom_violin() + facet_wrap(~variable, scales = "free") + myTheme + scale_fill_manual(values = c("lightblue", "salmon"))
+```
+
+The violin plots emphasize how features differ among malignant and benign tumors by including density within their visuals.  We see some features, like area_mean, show a fairly definitive difference between the two types, but other features, like symmetry_se, almost show no difference between the two.
+
+### Plots: Beeswarm
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(beeswarm)
+all_features = names(BC_data)
+par(mfrow = c(3,1))
+loop.x = 2:length(names(BC_data))
+for (i in loop.x) {
+  x.plot = BC_data[,i]
+  beeswarm(x.plot, pwcol = c(ifelse(BC_data$diagnosis == "M", "salmon", "lightblue")), pch = 16, cex = .5, main = all_features[i], bty = "n", yaxt = "n")
+  legend("bottom", inset = c(-.01,-.4), c("M", "B"), col = c("salmon", "lightblue"), pch = 16, bty = "n", horiz = T, cex = .8, xpd = T)
+}
+```
+
+### Plots: Correlation Heat Map
+```{r, warning=FALSE, message=FALSE}
+library(RColorBrewer)
+BC_cors = round(cor(BC_data[,-1]),2)
+corrplot::corrplot(BC_cors, order = "hclust", method = "circle", col = colorRampPalette(c("darkblue", "ghostwhite", "red3"))(200), tl.cex = .7, tl.col = "black", type = "upper")
+```
+
+
+
+### Training and Test Data
+```{r}
+set.seed(200)
+train_BC_index = sample(nrow(BC_data), 0.7*nrow(BC_data), replace = F)
+train_BC = BC_data[train_BC_index, ]
+test_BC = BC_data[-train_BC_index, ]
+
+par(mfrow = c(1,2))
+barplot(table(train_BC$diagnosis), col = c("lightblue", "salmon"), border = NA, main = "Train Data", ylab = "Count", ylim = c(0,300), las = 1)
+axis(2, col = "white", tck = .03, labels = F)
+barplot(table(test_BC$diagnosis), col = c("lightblue", "salmon"), border = NA, main = "Test Data", ylab = "Count", ylim = c(0,300), las = 1)
+axis(2, col = "white", tck = .03, labels = F)
+
+```
+
+### Modeling
+```{r, warning=FALSE, message=FALSE}
+set.seed(201)
+library(randomForest)
+model1_BC = randomForest(diagnosis ~ ., data = train_BC, importance = T)
+model1_BC
+varImpPlot(model1_BC, cex = .7)
+
+```
+
+```{r}
+remove_BC_features = c("radius_mean", "texture_mean", "perimeter_mean", "area_mean", "radius_se", "radius_worst")
+BC_data = BC_data[,setdiff(names(BC_data), remove_BC_features)]
+
+```
+
+
+```{r}
+set.seed(203)
+predictions = predict(model1_BC, test_BC, type = "class")
+table(test_BC[,1], predictions)
+
+```
+
+
+
+```{r}
+set.seed(202)
+model2_BC = randomForest(diagnosis ~ ., data = train_BC, importance = F)
+model2_BC
+table(test_BC[,1], predict(model2_BC,test_BC))
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+set.seed(203)
+library(gbm)
+BC_data_binary = BC_data
+BC_data_binary$diagnosis0 = rep(0, length(BC_data_binary$diagnosis))
+BC_data_binary$diagnosis0[which(BC_data_binary$diagnosis == "M")] = 1
+
+train_BC_index0 = sample(nrow(BC_data_binary), 0.7*nrow(BC_data_binary), replace = F)
+train_BC0 = BC_data_binary[train_BC_index0, ]
+test_BC0 = BC_data_binary[-train_BC_index0, ]
+
+
+model3_bc = gbm(diagnosis0 ~ ., data = train_BC0[,-1], distribution = "bernoulli", n.trees = 2000, interaction.depth = 4, shrinkage = 0.1, verbose = F)
+summary(model3_bc)
+plot(model3_bc, i = "perimeter_worst")
+
+predBoost = predict(model3_bc, newdata = test_BC0[,-1], n.trees = 2000, type = "response")
+table(test_BC0[,"diagnosis0"], round(predBoost, 0))
+```
+
