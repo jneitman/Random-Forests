@@ -1,0 +1,404 @@
+---
+title: "Random Forests: Part 1"
+author: "Joel Neitman"
+date: "February 17, 2019"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Bagging
+
+```{r echo=FALSE, out.width="100%"}
+knitr::include_graphics("./Forests1.jpg")
+```
+
+A random forest is an ensemble method utilizing decision trees (weak learners) to create predictions for classification or regression.  Random forests also provide a means to feature selection by measuring the importance of each feature, leaving some susceptible to removal for a final model.  A key part to random forests is bootstrap aggregation or "bagging" for short, which is sampling from the whole data set with replacement to grow each decision tree within the forest.  A more detailed explanation of random forests can be found [here](https://medium.com/@williamkoehrsen/random-forest-simple-explanation-377895a60d2d).
+
+As an initial example, the iris data set -- found in the basic R installation -- will be used to demonstrate a random forest implementation for classifying species.
+
+### Load and View Data
+```{r cars}
+data("iris")
+#summary statistics
+str(iris) 
+summary(iris)
+```
+
+### Plots:  Violin and Pairs
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(ggplot2)
+myTheme = theme(
+  panel.background = element_blank(),
+  panel.grid = element_blank(),
+  legend.position = "none"
+)
+
+SL = ggplot(iris, aes(x = Species, y = Sepal.Length, fill = Species)) + geom_violin() + myTheme + scale_fill_brewer(palette = "Dark2")
+SW = ggplot(iris, aes(x = Species, y = Sepal.Width, fill = Species)) + geom_violin() + myTheme + scale_fill_brewer(palette = "Dark2")
+PL = ggplot(iris, aes(x = Species, y = Petal.Length, fill = Species)) + geom_violin() + myTheme + scale_fill_brewer(palette = "Dark2") 
+PW = ggplot(iris, aes(x = Species, y = Petal.Width, fill = Species)) + geom_violin() + myTheme + scale_fill_brewer(palette = "Dark2")
+```
+
+
+```{r, echo=FALSE}
+#Function to plot side-by-side ggplots
+
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+iris %>% 
+  group_by(iris$Species) %>%
+  summarise(counts = length(iris$Species))
+
+multiplot(SL + labs(title = "Sepal Observations"), SW + labs(title = " "), cols = 2)#violin plots: Sepal.Length and Sepal.Width
+multiplot(PL + labs(title = "Petal Observations"), PW + labs(title = " "), cols = 2)#violin plots: Petal.Length and Petal.Width
+
+plot(iris[,-5])#pairs plot
+```
+
+Each species has the same number of observations with differences between their sepal and petal measurements shown in the violin plots.
+
+The last plot shows some correlation between features, but since there are only 4 features to start with, we'll wait to remove data until variable importance is assessed.
+
+### Random Forest Library
+```{r, warning=FALSE, message=FALSE}
+library(randomForest)
+library(party)
+set.seed(100)
+train = sample(nrow(iris), 0.7*nrow(iris), replace = F) #create training data index (70% of data)
+train_data = iris[train, ]
+test_data = iris[-train, ]
+
+```
+
+### Modeling: Random Forest with Bagging
+
+Starting with a simple model including all variables and default model parameter values
+```{r, message=FALSE, warning=FALSE}
+set.seed(102)
+model1 = randomForest(Species ~ ., data = train_data, importance = T, replace = T)
+library(caret)
+model1
+model1$importance
+varImpPlot(model1)
+confusionMatrix(train_data[,5], model1$predicted)
+```
+
+Calling the model shows it had an error rate of 6.67%.  Reviewing the confusion matrix shows 4 virginica were classified as versicolor and 3 versicolor classified as virginica, which is understandable considering these two species had similar observations among their sepal width.  This is an easy situation to identify possibly reasons why incorrect classification occurred, but in more complex cases, say when 100+ features are observed, deducing such reasons may not be as simple.
+
+The above plots show variable importance after the random forest model has been fitted to the training data.  Focusing on the Mean Decrease Accuracy plot, Sepal.Width contributed the least (is least important) when classifying species.  Setting importance = T in the model shows this as well by providing numeric scores for each variable. It would be sensible to then remove Sepal.Width from the model.
+
+#### Remove Sepal.Width
+```{r}
+set.seed(103)
+model2 = randomForest(Species ~ . -Sepal.Width, data = train_data, impotance = NULL, replace = T)
+model2
+confusionMatrix(train_data[,5], model2$predicted)
+```
+
+We shouldn't expect a decrease in error rate because Sepal.Width was barely used (if at all) in the classification and calling the model still shows an error rate of 6.67%. Adjusting the model's parameters, such as number of tress and node attributes, can yield improvement.
+
+#### Adjust Number of Trees
+
+Increasing the number of trees can improve performance but at the cost of more processing/computation.
+
+```{r}
+set.seed(104)
+model3 = randomForest(Species ~ . -Sepal.Width, data = train_data, importance = F, ntree = 4000, replace = T)
+model3
+confusionMatrix(train_data[,5], model3$predicted)
+```
+
+#### Cross Validation: n.trees
+```{r}
+n = dim(train_data)[1]
+k = 10
+groups = c(rep(1:k,n/k),1:5)
+set.seed(5)
+cvgroups = sample(groups, n)
+myTrees = seq(10,4000,10)
+allPredAcc = rep(NA,length(myTrees))
+
+for(m in 1:length(myTrees)){
+  PredsCV = rep(NA, n)
+  for(i in 1:k){
+    groupi = (cvgroups == i)
+    fit_m = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, n.tree = myTrees[m])
+    predict_m = predict(fit_m, train_data[groupi, -5], n.tree = myTrees[m], type = "class")
+    PredsCV[groupi] = predict_m
+    
+  }
+    allPredAcc[m] = confusionMatrix(as.factor(as.integer(train_data[,5])), as.factor(PredsCV))$overall[1]
+}
+
+paste0("Optimal number of trees is ", myTrees[which.max(allPredAcc)], " with an accurancy of ", round(max(allPredAcc),2)*100, "%")
+```
+
+
+#### Adjust Number of Variables per Node
+
+Adjusting the mtry controls how many attributes (features) are being assessed at each note.  Again this can be optimized with CV.
+
+```{r}
+set.seed(105)
+model4 = randomForest(Species ~ . -Sepal.Width, data = train_data, importance = F, mtry = 3, replace = T)
+model4
+confusionMatrix(train_data[,5], model4$predicted)
+```
+
+##### Cross Validation: mtry
+
+```{r}
+n = dim(train_data)[1]
+k = 10
+groups = c(rep(1:k,n/k),1:5)
+set.seed(6)
+cvgroups = sample(groups, n)
+myNodesAtt = seq(1,3,1)
+allPredAcc = rep(NA,length(myNodesAtt))
+
+for(m in 1:length(myNodesAtt)){
+  PredsCV = rep(NA, n)
+  for(i in 1:k){
+    groupi = (cvgroups == i)
+    fit_m = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, mtry = myNodesAtt[m])
+    predict_m = predict(fit_m, train_data[groupi, -5], n.tree = 90, type = "class", myNodesAtt[m])
+    PredsCV[groupi] = predict_m
+    
+  }
+    allPredAcc[m] = confusionMatrix(as.factor(as.integer(train_data[,5])), as.factor(PredsCV))$overall[1]
+}
+
+paste0("Optimal number of attributes at each node is ", myNodesAtt[which.max(allPredAcc)], " with an accurancy of ", round(max(allPredAcc),3)*100, "%")
+```
+
+
+#### Cross Validation: Model Selection-1
+```{r}
+n = dim(train_data)[1]
+k = 10
+groups = c(rep(1:k,n/k),1:5)
+set.seed(90)
+cvgroups = sample(groups, n)
+allPreds = matrix(NA, nrow = n, ncol = 5)
+
+for(i in 1:k){
+    groupi = (cvgroups == i)
+    m1 = randomForest(Species ~ ., data = train_data, subset = !groupi)
+    m2 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi)
+    m3 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, n.tree = 90)
+    m4 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, mtry = 3)
+    m5 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, n.tree = 90, mtry = 3)
+    
+    p1 = predict(m1, newdata = train_data[groupi, -5], type = "class")
+    p2 = predict(m2, newdata = train_data[groupi, -5], type = "class")
+    p3 = predict(m3, newdata = train_data[groupi, -5], type = "class")
+    p4 = predict(m4, newdata = train_data[groupi, -5], type = "class")
+    p5 = predict(m5, newdata = train_data[groupi, -5], type = "class")
+    
+    allPreds[groupi,1] = p1
+    allPreds[groupi,2] = p2
+    allPreds[groupi,3] = p3
+    allPreds[groupi,4] = p4
+    allPreds[groupi,5] = p5
+}
+
+allPreds = cbind(allPreds, train_data[,5])
+
+paste0("model1 = ", confusionMatrix(as.factor(allPreds[,1]), as.factor(allPreds[,6]))$overall[1])
+paste0("model2 = ", confusionMatrix(as.factor(allPreds[,2]), as.factor(allPreds[,6]))$overall[1])
+paste0("model3 = ", confusionMatrix(as.factor(allPreds[,3]), as.factor(allPreds[,6]))$overall[1])
+paste0("model4 = ", confusionMatrix(as.factor(allPreds[,4]), as.factor(allPreds[,6]))$overall[1])
+paste0("model5 = ", confusionMatrix(as.factor(allPreds[,5]), as.factor(allPreds[,6]))$overall[1])
+
+
+```
+
+Other parameters, such as nodesize and maxnodes, can be adjusted as well but will not be shown here.
+
+The cross validation shows an accuracy of 95.2% for the models 3, 4, and 5.  These were the models containing parameters selected from cross validation.
+
+### Predictions for Test Data
+
+We'll use model 5 to make predictions for the test data.
+
+```{r}
+set.seed(277)
+model5 = randomForest(Species ~ . -Sepal.Width, data = train_data, n.tree = 90, mtry = 3)
+species_predictions = predict(model5, test_data, type = "class")
+confusionMatrix(test_data$Species, species_predictions)
+```
+
+The test predictions are very close with an accuracy of 93.3%.
+
+## Boosting
+
+Boosting is another ensemble method and grows it's trees in a sequential manner instead of independently as seen in bagging.  By sequential growing tree-by-tree, boosting improves performance (boosts performance) by focusing on harder predictions, which are observations the previous tree predicted poorly (had large residuals in regression).
+
+
+### Gradient Boosting Library
+```{r, message=FALSE, warning=FALSE}
+library(gbm)
+```
+
+### Modeling: Random Forest with Boosting
+
+To show how boosting (gbm) in R is implemented, a simple model will be fit on the iris data set with all variables considered.
+
+```{r}
+set.seed(300)
+modelGBM_iris = gbm(Species ~ ., data = train_data, verbose = F, distribution = "multinomial")
+t = summary(modelGBM_iris, plot = F)
+barplot(t$rel.inf, names.arg = t$var, las = 1, cex.names = .8, main = "Relative Influence")
+
+predsGBM_iris = data.frame(round(predict.gbm(modelGBM_iris, newdata = test_data[,-5], n.trees = modelGBM_iris$n.trees, type = "response"),0))
+predsGBM_iris$setosa.100[which(predsGBM_iris$setosa.100 == 1)] = "setosa"
+predsGBM_iris$versicolor.100[which(predsGBM_iris$versicolor.100 == 1)] = "versicolor"
+predsGBM_iris$virginica.100[which(predsGBM_iris$virginica.100 == 1)] = "virginica"
+predsGBM_iris[predsGBM_iris == 0] = NA
+predsGBM_iris = predsGBM_iris %>%
+  mutate(PredicationClasses = coalesce(setosa.100, versicolor.100, virginica.100))
+confusionMatrix(test_data[,5], as.factor(predsGBM_iris$PredicationClasses))
+```
+
+The barplot shows how useful the features where within the modeling process.  Here we see Sepal.Length being the least relevant instead of Sepal.Width like before.  Using the model for predicting the test data species, we see an accuracy of 91.1%.
+
+#### Cross Validation: gbm n.tree
+
+gbm has a built in function to k-fold cross validate for identifying an optimum number of trees.  Here we'll do 10-fold CV.
+```{r}
+set.seed(301)
+modelGBM_irisCV = gbm(Species ~ ., data = train_data, verbose = F, distribution = "multinomial", cv.folds = 10)
+gbm.perf(modelGBM_irisCV)
+
+predsGBM_iris = data.frame(round(predict.gbm(modelGBM_irisCV, newdata = test_data[,-5], n.trees = gbm.perf(modelGBM_irisCV, plot.it = F), type = "response"),0))
+colnames(predsGBM_iris) = c("setosa", "versicolor", "virginica")
+predsGBM_iris$setosa[which(predsGBM_iris$setosa == 1)] = "setosa"
+predsGBM_iris$versicolor[which(predsGBM_iris$versicolor == 1)] = "versicolor"
+predsGBM_iris$virginica[which(predsGBM_iris$virginica == 1)] = "virginica"
+predsGBM_iris[predsGBM_iris == 0] = NA
+predsGBM_iris = predsGBM_iris %>%
+  mutate(PredicationClasses = coalesce(setosa, versicolor, virginica))
+confusionMatrix(test_data[,5], as.factor(predsGBM_iris$PredicationClasses))
+
+```
+
+Setting the model to now use the optimum number of trees, we achieve an accuracy of 97.7%.  If this were a more complicated case, we could also CV other gbm parameters. 
+
+#### Cross Validation: Model Selection-2
+
+Comparing all five models with cross validation for model selection then provides a OOG estimation for model performance.
+
+```{r}
+
+n = dim(train_data)[1]
+k = 10
+groups = c(rep(1:k,n/k),1:5)
+set.seed(90)
+cvgroups = sample(groups, n)
+allPreds = matrix( , nrow = n, ncol = 6)
+for(i in 1:k){
+    groupi = (cvgroups == i)
+    m1 = randomForest(Species ~ ., data = train_data, subset = !groupi)
+    m2 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi)
+    m3 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, n.tree = 90)
+    m4 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, mtry = 3)
+    m5 = randomForest(Species ~ . -Sepal.Width, data = train_data, subset = !groupi, n.tree = 90, mtry = 3)
+    m6 = gbm(Species ~ ., data = train_data[-groupi, ], verbose = F, distribution = "multinomial", n.trees = 33)
+    
+    p1 = predict(m1, newdata = train_data[groupi, -5], type = "class")
+    p2 = predict(m2, newdata = train_data[groupi, -5], type = "class")
+    p3 = predict(m3, newdata = train_data[groupi, -5], type = "class")
+    p4 = predict(m4, newdata = train_data[groupi, -5], type = "class")
+    p5 = predict(m5, newdata = train_data[groupi, -5], type = "class")
+    p6 = data.frame(round(predict.gbm(m6, newdata = train_data[groupi, -5], n.trees = 33, type = "response"),0))
+  colnames(p6) = c("setosa", "versicolor", "virginica")
+  p6$setosa[which(p6$setosa == 1)] = "1"
+  p6$versicolor[which(p6$versicolor == 1)] = "2"
+  p6$virginica[which(p6$virginica == 1)] = "3"
+  p6[p6 == 0] = NA
+  p6 = p6 %>%
+  mutate(PredicationClasses = coalesce(setosa, versicolor, virginica))
+    allPreds[groupi,1] = p1
+    allPreds[groupi,2] = p2
+    allPreds[groupi,3] = p3
+    allPreds[groupi,4] = p4
+    allPreds[groupi,5] = p5
+    allPreds[groupi,6] = p6$PredicationClasses
+
+}
+
+allPreds = cbind(allPreds, train_data[,5])
+
+paste0("model1 = ", confusionMatrix(as.factor(allPreds[,1]), as.factor(allPreds[,7]))$overall[1])
+paste0("model2 = ", confusionMatrix(as.factor(allPreds[,2]), as.factor(allPreds[,7]))$overall[1])
+paste0("model3 = ", confusionMatrix(as.factor(allPreds[,3]), as.factor(allPreds[,7]))$overall[1])
+paste0("model4 = ", confusionMatrix(as.factor(allPreds[,4]), as.factor(allPreds[,7]))$overall[1])
+paste0("model5 = ", confusionMatrix(as.factor(allPreds[,5]), as.factor(allPreds[,7]))$overall[1])
+paste0("model6 = ", confusionMatrix(as.factor(allPreds[,6]), as.factor(allPreds[,7]))$overall[1])
+
+```
+
+We now see boosting being the best performing model.
+
+### Predictions for Test Data
+
+```{r}
+final_model = gbm(Species ~ ., data = train_data, verbose = F, distribution = "multinomial", n.trees = 33)
+p6 = data.frame(round(predict.gbm(m6, newdata = test_data[, -5], n.trees = 33, type = "response"),0))
+colnames(p6) = c("setosa", "versicolor", "virginica")
+p6$setosa[which(p6$setosa == 1)] = "1"
+p6$versicolor[which(p6$versicolor == 1)] = "2"
+p6$virginica[which(p6$virginica == 1)] = "3"
+p6[p6 == 0] = NA
+p6 = p6 %>%
+  mutate(PredicationClasses = coalesce(setosa, versicolor, virginica))
+
+confusionMatrix(as.factor(as.integer(test_data$Species)), as.factor(p6$PredicationClasses))
+
+```
+
+Boosting, in this example, is the best performing model with an accuracy of 95.56%.  It should be noted, considering the simplicity of the data set, resetting the seeds can yield different best performing models, but after running the CV a several times, boosting was the most accurate overall.
